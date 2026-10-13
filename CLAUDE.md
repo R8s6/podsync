@@ -310,6 +310,7 @@ debug = false
 - Native hash links support browser Back, direct show links, and reverse-proxy path prefixes without extra server routes
 - Empty feeds and unavailable feeds remain visible in Shows; feed failures do not prevent other shows from loading
 - The UI follows the browser's light or dark appearance
+- Episode text and URL attributes are escaped, URLs use HTTP(S) only, and playback/image events use listeners rather than interpolated inline handlers
 
 ## Storage Behavior
 
