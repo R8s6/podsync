@@ -397,6 +397,13 @@
         #page-title {
             overflow-wrap: anywhere;
         }
+        .page-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+        #add-show { min-width: 44px; min-height: 44px; color: #9D4EDD; font-size: 1.6rem; }
+        #add-dialog { width: min(420px, calc(100% - 32px)); border: 0; border-radius: 16px; padding: 24px; }
+        #add-dialog::backdrop { background: rgb(0 0 0 / 40%); }
+        #add-dialog input { min-height: 44px; }
+        #add-dialog .btn { min-height: 44px; }
+        #add-dialog .dialog-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 20px; }
         @media (min-width: 600px) {
             .shows-grid {
                 grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -430,9 +437,12 @@
             h2, .episode-title, .show-link {
                 color: #F5F5F7;
             }
-            .episode-card {
+            #add-dialog, .episode-card {
+                color: #F5F5F7;
                 background: #202024;
             }
+            #add-dialog input { background: #2C2C31; color: #F5F5F7; border-color: #65656E; }
+            #add-dialog input::placeholder { color: #ABABB3; }
             .description-text {
                 color: #D7D7DD;
             }
@@ -485,11 +495,12 @@
         </div>
         <!-- Header -->
         <div class="row mb-4">
-            <div class="col">
-                <h2 class="mb-3">
+            <div class="col page-heading">
+                <h2 class="mb-0">
                     <i id="page-icon" class="bi bi-list-ul me-2" aria-hidden="true"></i>
                     <span id="page-title">Latest Episodes</span>
                 </h2>
+                <button id="add-show" class="btn d-none" type="button" aria-label="Add show" title="Add show"><i class="bi bi-plus-lg" aria-hidden="true"></i></button>
             </div>
         </div>
 
@@ -504,6 +515,8 @@
             <i class="bi bi-exclamation-triangle me-2"></i>
             <strong>Error!</strong> <span id="error-text"></span>
         </div>
+
+        <p id="add-status" class="episode-meta d-none" role="status"></p>
 
         <div id="feed-warning" class="alert alert-warning d-none" role="status"></div>
 
@@ -521,6 +534,25 @@
     </main>
 
     
+    <dialog id="add-dialog" aria-labelledby="add-title">
+        <h3 id="add-title" class="h5 mb-3">Add show</h3>
+        <p id="admin-error" class="text-danger small" role="alert"></p>
+        <form id="admin-login" class="d-none">
+            <label for="admin-token" class="form-label">Admin token</label>
+            <input id="admin-token" class="form-control" type="password" autocomplete="current-password" maxlength="256" required>
+            <div class="dialog-actions"><button class="btn btn-primary" type="submit">Sign in</button></div>
+        </form>
+        <form id="add-form" class="d-none">
+            <label for="show-url" class="form-label">Channel or playlist URL</label>
+            <input id="show-url" class="form-control" type="url" placeholder="https://www.youtube.com/@channel" maxlength="2048" required>
+            <div class="dialog-actions">
+                <button id="admin-logout" class="btn btn-outline-secondary" type="button">Sign out</button>
+                <button class="btn btn-primary" type="submit">Add</button>
+            </div>
+        </form>
+        <div class="dialog-actions"><button id="close-add" class="btn btn-outline-secondary" type="button">Close</button></div>
+    </dialog>
+
     <!-- Include the OPML/RSS parsing functions -->
     <script>
         /**
@@ -656,11 +688,12 @@
                     image: feedArtwork(channel),
                     episodes,
                     latestEpisodeDate: latestEpisode?.pubDateParsed || null,
-                    unavailable: false
+                    unavailable: false,
+                    pending: false
                 };
                 
             } catch (error) {
-                console.error(`Error fetching feed ${feedData.xmlUrl}:`, error);
+                if (!feedData.pending) console.error(`Error fetching feed ${feedData.xmlUrl}:`, error);
                 return {
                     ...feedData,
                     image: '',
@@ -793,11 +826,15 @@
         let allShows = [];
         let libraryLoading = true;
         let libraryError = '';
+        let canAddShows = false;
+        let adminCSRF = '';
+        const pendingShows = new Map();
 
         /**
          * Load each feed once and share its data between all library views.
          */
         async function loadLibrary() {
+            libraryError = '';
             renderCurrentView();
             try {
                 const opmlData = await loadOPMLFromURL('podsync.opml');
@@ -807,6 +844,9 @@
                     if (xmlUrl) feeds.set(xmlUrl, { ...feed, xmlUrl });
                 });
                 allShows = await Promise.all(Array.from(feeds.values(), fetchFeed));
+                pendingShows.forEach((show, url) => {
+                    if (!allShows.some(existing => existing.xmlUrl === url)) allShows.push(show);
+                });
                 allShows.sort((a, b) => {
                     const dateDifference = (b.latestEpisodeDate?.getTime() || 0) -
                         (a.latestEpisodeDate?.getTime() || 0);
@@ -835,6 +875,7 @@
         }
 
         function showMetadata(show) {
+            if (show.pending) return 'Pending';
             if (show.unavailable) return 'Unavailable';
             const age = show.latestEpisodeDate ? `${relativeEpisodeDate(show.latestEpisodeDate)} · ` : '';
             return `${age}${show.episodes.length} new`;
@@ -898,6 +939,7 @@
             const route = currentRoute();
             const show = allShows.find(feed => feed.xmlUrl === route.xmlUrl);
             const showsPage = route.page === 'shows';
+            document.getElementById('add-show').classList.toggle('d-none', !canAddShows || !showsPage);
             const showPage = route.page === 'show';
 
             document.querySelectorAll('.audio-player').forEach(audio => audio.pause());
@@ -952,6 +994,7 @@
 
             const message = showsPage ? 'No shows available.' :
                 showPage && !show ? 'Show not found.' :
+                show?.pending ? 'Waiting for the first sync.' :
                 show?.unavailable ? 'This show could not be loaded.' : 'No episodes available.';
             document.getElementById('empty-text').textContent = message;
             document.getElementById('empty-message').classList.remove('d-none');
@@ -1110,6 +1153,122 @@
             });
         }
 
+        // Public browsing only checks whether the feature is available. Session
+        // checks and sign-in happen only after the user asks to add a show.
+        async function discoverAdmin() {
+            try {
+                const response = await fetch('api/admin/capabilities', { credentials: 'omit', cache: 'no-store' });
+                canAddShows = response.ok && (await response.json()).enabled === true;
+                document.getElementById('add-show').classList.toggle('d-none', !canAddShows || currentRoute().page !== 'shows');
+            } catch { /* Administration is optional. */ }
+        }
+
+        async function adminRequest(path, body) {
+            const response = await fetch(`api/admin/${path}`, {
+                method: body === undefined ? 'GET' : 'POST',
+                credentials: 'same-origin', cache: 'no-store',
+                headers: body === undefined ? {} : { 'Content-Type': 'application/json', 'X-CSRF-Token': adminCSRF },
+                body: body === undefined ? undefined : JSON.stringify(body)
+            });
+            if (!response.ok) {
+                if (response.status === 401) showAdminLogin();
+                throw new Error((await response.text()).slice(0, 300));
+            }
+            return response.status === 204 ? {} : response.json();
+        }
+
+        function showAdminLogin() {
+            adminCSRF = '';
+            document.getElementById('admin-login').classList.remove('d-none');
+            document.getElementById('add-form').classList.add('d-none');
+            document.getElementById('admin-token').focus();
+        }
+
+        function showAddForm() {
+            document.getElementById('admin-login').classList.add('d-none');
+            document.getElementById('add-form').classList.remove('d-none');
+            document.getElementById('show-url').focus();
+        }
+
+        async function adminAction(action) {
+            const dialog = document.getElementById('add-dialog');
+            const error = document.getElementById('admin-error');
+            error.textContent = '';
+            dialog.querySelectorAll('button[type="submit"]').forEach(button => button.disabled = true);
+            try { await action(); }
+            catch (failure) { error.textContent = failure.message; }
+            finally { dialog.querySelectorAll('button[type="submit"]').forEach(button => button.disabled = false); }
+        }
+
+        async function refreshPendingShow(show, attempts = 0) {
+            const loaded = await fetchFeed(show);
+            if (!loaded.unavailable) {
+                pendingShows.delete(show.xmlUrl);
+                if (!pendingShows.size) document.getElementById('add-status').classList.add('d-none');
+                allShows = allShows.map(existing => existing.xmlUrl === show.xmlUrl ? loaded : existing);
+                allShows.sort((a, b) => (b.latestEpisodeDate?.getTime() || 0) - (a.latestEpisodeDate?.getTime() || 0));
+                allEpisodes = allShows.flatMap(existing => existing.episodes).sort((a, b) => b.pubDateParsed - a.pubDateParsed);
+                renderCurrentView();
+            } else if (attempts < 120) {
+                setTimeout(() => refreshPendingShow(show, attempts + 1), 30000);
+            }
+        }
+
+        document.getElementById('add-show').addEventListener('click', () => {
+            const dialog = document.getElementById('add-dialog');
+            document.getElementById('admin-login').classList.add('d-none');
+            document.getElementById('add-form').classList.add('d-none');
+            dialog.showModal();
+            adminAction(async () => {
+                if (location.protocol !== 'https:') throw new Error('Use the configured HTTPS address to add shows.');
+                try {
+                    adminCSRF = (await adminRequest('session')).csrf;
+                    showAddForm();
+                } catch (error) {
+                    if (!document.getElementById('admin-login').classList.contains('d-none')) return;
+                    throw error;
+                }
+            });
+        });
+        document.getElementById('close-add').addEventListener('click', () => document.getElementById('add-dialog').close());
+        document.getElementById('add-dialog').addEventListener('close', () => {
+            document.getElementById('admin-token').value = '';
+        });
+        document.getElementById('admin-login').addEventListener('submit', event => {
+            event.preventDefault();
+            adminAction(async () => {
+                const input = document.getElementById('admin-token');
+                const token = input.value;
+                input.value = '';
+                adminCSRF = (await adminRequest('login', { token })).csrf;
+                showAddForm();
+            });
+        });
+        document.getElementById('admin-logout').addEventListener('click', () => adminAction(async () => {
+            await adminRequest('logout', {});
+            showAdminLogin();
+        }));
+        document.getElementById('add-form').addEventListener('submit', event => {
+            event.preventDefault();
+            adminAction(async () => {
+                const input = document.getElementById('show-url');
+                const url = input.value.trim();
+                const { id } = await adminRequest('feeds', { url });
+                const show = { title: url, xmlUrl: new URL(`${id}.xml`, document.baseURI).href,
+                    episodes: [], image: '', pending: true, unavailable: false };
+                pendingShows.set(show.xmlUrl, show);
+                allShows.push(show);
+                input.value = '';
+                document.getElementById('add-dialog').close();
+                const status = document.getElementById('add-status');
+                status.textContent = 'Show added. The first sync is queued.';
+                status.classList.remove('d-none');
+                location.hash = '#shows';
+                renderCurrentView();
+                setTimeout(() => refreshPendingShow(show), 5000);
+            });
+        });
+
         // Hash links keep navigation on the existing HTML page, including when
         // Podsync is served under a reverse-proxy path prefix.
         window.addEventListener('hashchange', function() {
@@ -1119,6 +1278,7 @@
 
         document.addEventListener('DOMContentLoaded', function() {
             loadLibrary();
+            discoverAdmin();
         });
     </script>
 </body>

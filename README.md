@@ -207,3 +207,56 @@ of episodes currently available in that RSS feed. Playback history is not tracke
 Click a show's artwork to browse only its episodes, using the same episode cards, playback, and download
 controls as Latest Episodes. Shows are sorted by their newest episode, and browser Back and bookmarked
 show links work with the existing web UI, including under a reverse-proxy path prefix.
+
+#### Adding shows
+
+Feed creation is disabled by default. To enable **Shows > +**, set `server.web_ui = true`
+and add the following to your host's `config.toml`, replacing the token with the output of
+`openssl rand -hex 32`:
+
+```toml
+[web_admin]
+enabled = true
+token = "REPLACE_WITH_YOUR_RANDOM_TOKEN"
+origin = "https://podsync.example.com"
+
+[web_admin.defaults]
+page_size = 10
+update_period = "60h"
+quality = "high"
+format = "audio"
+playlist_sort = "asc"
+clean = { keep_last = 500 }
+filters = { min_duration = 600 }
+```
+
+Restart Podsync once to enable the feature. Administration requires HTTPS, using Podsync's TLS
+settings or a TLS-terminating reverse proxy. `origin` is the browser-facing scheme and host,
+including a nonstandard port if needed, without a path or trailing slash. It defaults to the
+origin of `server.hostname`. The proxy must preserve `Host`; forwarded headers are not trusted.
+Keep the backend port private when using a proxy. Any additional proxy authentication must
+cover only `/{path}/api/admin/`, leaving the UI, RSS, OPML and media publicly accessible.
+
+Sign-in is requested only after clicking **+**. Paste a supported YouTube channel, handle or
+playlist URL, Vimeo channel/group/user URL, SoundCloud playlist URL, or Twitch channel URL.
+Provider API keys must already be configured on the host. A single YouTube `watch?v=...` link
+without a playlist is not supported. The form accepts only the URL, uses the configured defaults,
+includes the show in OPML and skips live streams. No account or token is needed in podcast clients.
+
+Added shows are saved in the existing database volume and scheduled immediately, without a
+restart. A pending card appears until the first sync produces the RSS feed; the page checks for
+it for up to an hour. Refreshing also reloads the published feeds. Retain the database volume
+when recreating the container. Changing defaults affects future additions only. Host-defined
+feeds take precedence if an ID matches a saved definition. Setting `enabled = false` hides the
+button and removes management endpoints; saved shows continue syncing.
+
+Keep `config.toml` and `database.dir` outside `storage.local.data_dir`. The config can remain
+mounted read-only. Sessions expire after eight hours, on sign-out, or on server restart. Rotate
+the token and restart to revoke all sessions. The backend enforces origin and CSRF checks,
+bounded requests, 10 sign-in attempts and 20 additions per minute across the instance, and a
+limit of 100 web-added shows. Existing feed and media routes never check sign-in. The first
+version supports adding shows only, with no web editing, deletion, hooks or custom download arguments.
+
+URL validation restricts additions to supported provider addresses; it is not a network sandbox
+for yt-dlp or provider responses. Use container/network egress rules if downloads must be prevented
+from reaching internal services.
