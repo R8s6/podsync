@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,7 +14,6 @@ import (
 	"github.com/mxpv/podsync/services/migrate"
 	"github.com/mxpv/podsync/services/update"
 	"github.com/mxpv/podsync/services/web"
-	"github.com/robfig/cron/v3"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -125,6 +123,10 @@ func main() {
 		}
 	}()
 
+	if err := cfg.loadManagedFeeds(database); err != nil {
+		log.WithError(err).Fatal("failed to load web-added feeds")
+	}
+
 	var storage fs.Storage
 	switch cfg.Storage.Type {
 	case "local":
@@ -192,78 +194,24 @@ func main() {
 		return
 	}
 
-	// Queue of feeds to update
-	updates := make(chan *feed.Config, 16)
-	defer close(updates)
+	scheduler := update.NewScheduler()
+	for _, f := range cfg.Feeds {
+		if err := scheduler.Add(f); err != nil {
+			log.WithError(err).Fatalf("can't schedule feed: %s", f.ID)
+		}
+	}
+	if err := manager.WriteOPML(ctx); err != nil {
+		log.WithError(err).Fatal("failed to initialize OPML")
+	}
 
 	group, ctx := errgroup.WithContext(ctx)
 	defer func() {
-		if err := group.Wait(); err != nil && (err != context.Canceled && err != http.ErrServerClosed) {
+		if err := group.Wait(); err != nil && err != context.Canceled && err != http.ErrServerClosed {
 			log.WithError(err).Error("wait error")
 		}
 		log.Info("gracefully stopped")
 	}()
-
-	// Create Cron
-	c := cron.New(cron.WithChain(cron.SkipIfStillRunning(cron.DiscardLogger)))
-	m := make(map[string]cron.EntryID)
-
-	// Run updates listener
-	group.Go(func() error {
-		for {
-			select {
-			case _feed := <-updates:
-				if err := manager.Update(ctx, _feed); err != nil {
-					log.WithError(err).Errorf("failed to update feed: %s", _feed.URL)
-				} else {
-					log.Infof("next update of %s: %s", _feed.ID, c.Entry(m[_feed.ID]).Next)
-				}
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-	})
-
-	// Run cron scheduler
-	group.Go(func() error {
-		var cronID cron.EntryID
-
-		for _, _feed := range cfg.Feeds {
-			// Track if this feed has an explicit cron schedule
-			hasExplicitCronSchedule := _feed.CronSchedule != ""
-
-			if _feed.CronSchedule == "" {
-				_feed.CronSchedule = fmt.Sprintf("@every %s", _feed.UpdatePeriod.String())
-			}
-			cronFeed := _feed
-			if cronID, err = c.AddFunc(cronFeed.CronSchedule, func() {
-				log.Debugf("adding %q to update queue", cronFeed.ID)
-				updates <- cronFeed
-			}); err != nil {
-				log.WithError(err).Fatalf("can't create cron task for feed: %s", cronFeed.ID)
-			}
-
-			m[cronFeed.ID] = cronID
-			log.Debugf("-> %s (update '%s')", cronFeed.ID, cronFeed.CronSchedule)
-
-			// Only perform initial update if no explicit cron schedule is configured
-			// This prevents unwanted updates when using fixed schedules in Docker deployments
-			if !hasExplicitCronSchedule {
-				updates <- cronFeed
-			}
-		}
-
-		c.Start()
-
-		for {
-			<-ctx.Done()
-
-			log.Info("shutting down cron")
-			c.Stop()
-
-			return ctx.Err()
-		}
-	})
+	group.Go(func() error { return scheduler.Run(ctx, manager.Update) })
 
 	if cfg.Storage.Type == "s3" {
 		return // S3 content is hosted externally
@@ -271,6 +219,11 @@ func main() {
 
 	// Run web server
 	srv := web.New(cfg.Server, storage, database)
+	if err := srv.EnableAdmin(cfg.WebAdmin, func(ctx context.Context, link string) (string, error) {
+		return manager.AddWebFeed(ctx, link, cfg.WebAdmin.Defaults, database, scheduler)
+	}); err != nil {
+		log.WithError(err).Fatal("failed to configure web administration")
+	}
 
 	group.Go(func() error {
 		log.Infof("running listener at %s", srv.Addr)

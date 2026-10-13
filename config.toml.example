@@ -31,6 +31,29 @@ no_index = false
 # Optional. Disable directory listings, return 404 for folder access (e.g. GET / or GET /feedID).
 no_listing = false
 
+# Optional feed creation from Shows > +. Disabled unless explicitly enabled here.
+# Browsing, RSS, OPML and media always remain public, including when enabled.
+# Requires server.web_ui, local storage and HTTPS (directly or through a proxy).
+[web_admin]
+enabled = false
+# Generate a random secret with: openssl rand -hex 32
+# Keep config.toml and database.dir outside the publicly served data_dir.
+token = ""
+# Defaults to the origin of server.hostname. No path or trailing slash.
+# A TLS-terminating proxy must preserve Host and keep the backend port private.
+# origin = "https://podsync.example.com"
+
+# Applied only to newly added shows; existing definitions retain their settings.
+[web_admin.defaults]
+page_size = 10              # 1-100
+update_period = "6h"       # At least 1h
+quality = "high"          # high or low
+format = "audio"          # audio or video
+playlist_sort = "asc"     # asc or desc
+clean = { keep_last = 50 } # 1-1000
+# filters = { min_duration = 600 }
+# Web-added feeds always use opml=true and skip live streams.
+
 # Configure where to store the episode data
 [storage]
   # Could be "local" (default) for the local file system, or "s3" for a S3-compatible storage provider (e.g. AWS S3)

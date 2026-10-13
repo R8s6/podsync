@@ -15,7 +15,9 @@ import (
 
 type Server struct {
 	http.Server
-	db db.Storage
+	db        db.Storage
+	mux       *http.ServeMux
+	mountPath string
 }
 
 type Config struct {
@@ -62,6 +64,9 @@ func New(cfg Config, storage http.FileSystem, database db.Storage) *Server {
 	srv := Server{
 		db: database,
 	}
+	srv.ReadHeaderTimeout = 10 * time.Second
+	srv.ReadTimeout = 30 * time.Second
+	srv.IdleTimeout = 60 * time.Second
 
 	srv.Addr = fmt.Sprintf("%s:%d", bindAddress, port)
 	log.Debugf("using address: %s:%s", bindAddress, srv.Addr)
@@ -80,6 +85,7 @@ func New(cfg Config, storage http.FileSystem, database db.Storage) *Server {
 
 	log.Debugf("handle path: %s", mountPath)
 	mux.Handle(mountPath, fileServer)
+	srv.mux, srv.mountPath = mux, mountPath
 
 	// Add health check endpoint
 	mux.HandleFunc("/health", srv.healthCheckHandler)
@@ -95,6 +101,14 @@ func New(cfg Config, storage http.FileSystem, database db.Storage) *Server {
 		log.Info("search engine indexing blocked (no_index enabled)")
 		mux.HandleFunc("/robots.txt", robotsTxtHandler)
 		srv.Handler = noIndexMiddleware(srv.Handler)
+	}
+	if cfg.WebUIEnabled {
+		next := srv.Handler
+		srv.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'self'; object-src 'none'")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			next.ServeHTTP(w, r)
+		})
 	}
 
 	return &srv

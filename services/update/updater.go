@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/go-multierror"
@@ -34,6 +35,7 @@ type Manager struct {
 	db         db.Storage
 	fs         fs.Storage
 	feeds      map[string]*feed.Config
+	feedsMu    sync.RWMutex
 	keys       map[model.Provider]feed.KeyProvider
 }
 
@@ -86,7 +88,7 @@ func (u *Manager) Update(ctx context.Context, feedConfig *feed.Config) error {
 		return errors.Wrap(err, "xml build failed")
 	}
 
-	if err := u.buildOPML(ctx); err != nil {
+	if err := u.WriteOPML(ctx); err != nil {
 		return errors.Wrap(err, "opml build failed")
 	}
 
@@ -350,7 +352,9 @@ func (u *Manager) buildXML(ctx context.Context, feedConfig *feed.Config) error {
 	return nil
 }
 
-func (u *Manager) buildOPML(ctx context.Context) error {
+func (u *Manager) WriteOPML(ctx context.Context) error {
+	u.feedsMu.RLock()
+	defer u.feedsMu.RUnlock()
 	// Build OPML with data received from builder
 	log.Debug("building podcast OPML")
 	opml, err := feed.BuildOPML(ctx, u.feeds, u.db, u.hostname)

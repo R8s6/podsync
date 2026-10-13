@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,7 +23,8 @@ import (
 
 type Config struct {
 	// Server is the web server configuration
-	Server web.Config `toml:"server"`
+	Server   web.Config      `toml:"server"`
+	WebAdmin web.AdminConfig `toml:"web_admin"`
 	// S3 is the optional configuration for S3-compatible storage provider
 	Storage fs.Config `toml:"storage"`
 	// Log is the optional logging configuration
@@ -77,8 +79,52 @@ func LoadConfig(path string) (*Config, error) {
 	if err := config.validate(); err != nil {
 		return nil, err
 	}
+	if config.WebAdmin.Enabled {
+		for _, privatePath := range []string{path, config.Database.Dir} {
+			if pathWithin(config.Storage.Local.DataDir, privatePath) {
+				return nil, errors.New("web administration requires config.toml and database.dir outside storage.local.data_dir")
+			}
+		}
+	}
 
 	return &config, nil
+}
+
+func pathWithin(root, target string) bool {
+	resolve := func(path string) string {
+		absolute, _ := filepath.Abs(path)
+		// Resolve existing parents too: the database directory may not exist yet.
+		for parent := absolute; ; parent = filepath.Dir(parent) {
+			if real, err := filepath.EvalSymlinks(parent); err == nil {
+				suffix, _ := filepath.Rel(parent, absolute)
+				return filepath.Join(real, suffix)
+			}
+			if filepath.Dir(parent) == parent {
+				return absolute
+			}
+		}
+	}
+	relative, err := filepath.Rel(resolve(root), resolve(target))
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func (c *Config) loadManagedFeeds(store interface {
+	ManagedFeeds() ([]*feed.Config, error)
+}) error {
+	managed, err := store.ManagedFeeds()
+	if err != nil {
+		return err
+	}
+	for _, f := range managed {
+		// Explicit host configuration takes precedence over a saved definition.
+		if _, exists := c.Feeds[f.ID]; !exists {
+			c.Feeds[f.ID] = f
+		}
+	}
+	if len(c.Feeds) == 0 && !c.WebAdmin.Enabled {
+		return errors.New("at least one feed must be specified, or web_admin must be enabled")
+	}
+	return nil
 }
 
 func (c *Config) validate() error {
@@ -117,8 +163,11 @@ func (c *Config) validate() error {
 		result = multierror.Append(result, errors.Errorf("unknown storage type: %s", c.Storage.Type))
 	}
 
-	if len(c.Feeds) == 0 {
-		result = multierror.Append(result, errors.New("at least one feed must be specified"))
+	if err := c.WebAdmin.Validate(); err != nil {
+		result = multierror.Append(result, err)
+	}
+	if c.WebAdmin.Enabled && (!c.Server.WebUIEnabled || c.Storage.Type != "local") {
+		result = multierror.Append(result, errors.New("web_admin requires server.web_ui and local storage"))
 	}
 
 	for id, f := range c.Feeds {
@@ -139,6 +188,9 @@ func (c *Config) validate() error {
 }
 
 func (c *Config) applyDefaults(configPath string) {
+	if c.Feeds == nil {
+		c.Feeds = make(map[string]*feed.Config)
+	}
 	if c.Server.Hostname == "" {
 		if c.Server.Port != 0 && c.Server.Port != 80 {
 			c.Server.Hostname = fmt.Sprintf("http://localhost:%d", c.Server.Port)
@@ -150,6 +202,12 @@ func (c *Config) applyDefaults(configPath string) {
 	if c.Storage.Type == "" {
 		c.Storage.Type = "local"
 	}
+	if c.WebAdmin.Origin == "" {
+		if u, err := url.Parse(c.Server.Hostname); err == nil {
+			c.WebAdmin.Origin = u.Scheme + "://" + u.Host
+		}
+	}
+	c.WebAdmin.Defaults.ApplyDefaults()
 
 	if c.Log.Filename != "" {
 		if c.Log.MaxSize == 0 {

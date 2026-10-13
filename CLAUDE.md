@@ -312,6 +312,24 @@ debug = false
 - The UI follows the browser's light or dark appearance
 - Episode text and URL attributes are escaped, URLs use HTTP(S) only, and playback/image events use listeners rather than interpolated inline handlers
 
+### Optional Web Feed Creation
+
+- `[web_admin] enabled = false` by default; only host TOML can enable it
+- `token` is a random 32-256 character admin secret, never returned to clients; generate it with `openssl rand -hex 32`
+- `origin` is the exact HTTPS browser origin, defaulting to the origin of `server.hostname`; proxies must preserve Host and isolate the backend
+- Requires local storage and `server.web_ui`; config and database paths must be outside the public media directory
+- Shows > + requests sign-in only when adding; UI browsing, RSS, OPML and media always remain anonymous
+- Management routes under `/{path}/api/admin/`: GET capabilities/session and POST login/logout/feeds
+- Session cookies are HttpOnly, Secure, SameSite=Strict, and limited to the management path; sessions last at most eight hours and are lost on restart
+- POSTs require exact origin, JSON, and a session CSRF token after login; no forwarded headers or cross-origin access are trusted
+- Login is limited to 10 attempts/minute, additions to 20/minute, and managed definitions to 100 per instance
+- The API accepts only a URL; `pkg/builder/web_url.go` reconstructs supported provider URLs without fetching user-supplied addresses for validation
+- `[web_admin.defaults]` exposes page_size, update_period, quality, format, playlist_sort, clean and filters; bounds are 1-100 items/update, >=1h interval and 1-1000 retained episodes
+- New definitions always include OPML and skip live streams, and are persisted separately as `managed_feed/{id}` in Badger before scheduling
+- Startup merges saved definitions with TOML (TOML wins on ID conflicts), even when administration is disabled; an empty library is allowed when administration is enabled
+- `services/update/scheduler.go` runs one download worker, coalesces queued/running updates by feed, and supports live registration; explicit cron schedules still skip the initial update
+- The first version adds shows only; existing managed definitions keep their saved defaults
+
 ## Storage Behavior
 
 ### Local Storage
